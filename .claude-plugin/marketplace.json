@@ -1,0 +1,14 @@
+{
+  "name": "captain-nemo",
+  "description": "Claude Code tools for running Kubernetes Job batches on the Nautilus (NRP) cluster.",
+  "owner": {
+    "name": "Hongao0611"
+  },
+  "plugins": [
+    {
+      "name": "captain-nemo",
+      "source": "./",
+      "description": "Nautilus (NRP) job scheduler skill: violation-budget pacing, bad-node exclusion, hourly health report, manifest preflight."
+    }
+  ]
+}
