@@ -122,6 +122,50 @@ name without `.yaml`):
 `.nrp/<stem>.tracker.json` is the only record of which Jobs finished (the
 cluster deletes finished Jobs after 24 h). Never delete it while a batch runs.
 
+### Holding jobs back until you release them
+
+Sometimes part of a batch must wait for something outside it. For example, an
+experiment has a main arm and a control arm in one manifest, and you want every
+main-arm model evaluated before the control arm takes any GPUs. Removing those
+jobs from the manifest works, but it is easy to forget them. A hold file is
+simpler:
+
+```bash
+# Hold every job whose name contains "-control-"
+printf '# control arm waits for the main-arm evals\n-control-\n' > .nrp/<stem>.hold
+
+# Later: release them all
+rm .nrp/<stem>.hold
+```
+
+- **Format.** One regular expression per line, matched anywhere in the job name
+  (Python `re.search`). Blank lines and lines starting with `#` are ignored.
+  `-control-` matches `alice-train-control-s42`; `^alice-train-` matches every
+  training job.
+- **What it holds.** Only jobs that are still PENDING (not launched yet). Jobs
+  that are already running continue. Jobs that do not match keep launching,
+  and failed ones are retried as usual.
+- **The batch waits for held jobs.** The batch is not finished while held
+  jobs remain: `run_wave.sh` keeps running even after every other job is done.
+  So a job that ends FAILED after all its retries does not stop the batch:
+  look for `FAILED` in the `[status]` lines.
+- **How to see it.** The log says `[hold] 405 pending job(s) held by
+  .nrp/<stem>.hold` when the count changes. While jobs are held, every
+  `[status]` line ends in `held=N`.
+- **Release.** Delete the file, or delete lines from it to release some
+  patterns. The scheduler re-reads it at every poll (5 min by default), so no
+  restart is needed. Released jobs launch in manifest order as slots free up.
+- **A bad regex holds everything.** If a line is not a valid regular expression,
+  the scheduler logs it and holds every pending job, so nothing launches by
+  mistake. Fix the line to resume.
+- **`.pause` vs `.hold`.** `.pause` stops all launches, including retries.
+  `.hold` stops only the jobs you name.
+
+The hold file needs version 0.3.3 or later. A batch started with an older
+scheduler ignores the file: restart only the scheduler with
+`kill "$(cat .nrp/<stem>.scheduler.pid)"`. `run_wave.sh` respawns it in 60 s
+with the new code, and running Jobs are picked up again.
+
 ### The hourly check without Claude Code
 
 Most agents cannot wake themselves up. Run the report from cron and hand the
@@ -167,6 +211,7 @@ does the same with the agent acting on the result.
 | `nrp_preflight.py` | no (`--harden` writes a new local file; `--server-dry-run` creates nothing) |
 | `nrp_status.py` | no |
 | `nrp_scheduler.py` / `run_wave.sh` | creates and deletes **your prefixed** Jobs only; `--dry-run` changes nothing |
+| `nrp_cleanup.py` | only with `--apply`: deletes your prefixed Jobs that a tracker recorded SUCCEEDED, and force-deletes your pods stuck on a gone / NotReady node |
 
 None of the tools delete PVC data, W&B runs or Hugging Face repos. Stop
 processes by PID (the `.pid` files above), never with `pkill -f`.
@@ -177,19 +222,21 @@ processes by PID (the `.pid` files above), never with `pkill -f`.
 skills/nautilus-scheduler/
   SKILL.md        instructions for the agent: workflow, what to do with each report line
   reference.md    how NRP scores pods, bad-node signatures, request sizing, operations
-  scripts/        nrp_preflight.py  nrp_scheduler.py + run_wave.sh  nrp_status.py  nrp_common.py
+  scripts/        nrp_preflight.py  nrp_scheduler.py + run_wave.sh  nrp_status.py  nrp_cleanup.py  nrp_common.py
   tests/          offline tests against a simulated cluster
 ```
 
 ## Status
 
-Version 0.2.0.
+Version 0.3.3.
 
 - Offline tests pass: `python3 skills/nautilus-scheduler/tests/test_scheduler.py`
-  (13 scenarios against a simulated cluster) and `.../tests/test_common.py`.
-- The preflight, the health report and the scheduler's dry run have been run on
-  the real cluster. The scheduler has not yet driven a real batch end to end;
-  the rules it follows come from ~700 GPU Jobs run with an earlier scheduler.
+  (14 scenarios against a simulated cluster), plus `test_common.py`,
+  `test_status.py` and `test_cleanup.py` in the same directory.
+- Since 2026-10-01 the scheduler has been running two real batches on the
+  cluster (810 training Jobs and 370 eval Jobs), taking them over mid-batch
+  from an earlier scheduler. Neither has finished yet. The rules come from
+  ~700 GPU Jobs run before that.
 - NRP's scoring was matched to its Violations page on 2026-09-29. If NRP changes
   its policy, re-check the thresholds in `scripts/nrp_common.py`.
 
