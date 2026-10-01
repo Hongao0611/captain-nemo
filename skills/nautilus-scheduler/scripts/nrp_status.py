@@ -248,6 +248,41 @@ def excluded_by(pod):
     return set.intersection(*sets)
 
 
+def retry_burn(jobs, pods):
+    """Evidence that survives pod garbage collection: a Job's own failed-attempt
+    counter. Pods rejected at admission (UnexpectedAdmissionError) never start a
+    container and vanish within minutes, so this list -- not the pod list -- is
+    what first shows a black-hole node. Also lists pods stuck Terminating / Unknown:
+    they count against the namespace pod quota and can hold a finished Job open."""
+    section("retry budget burned / stuck pods")
+    burning = []
+    for j in jobs:
+        st = j.get("status", {})
+        f = st.get("failed") or 0
+        if f >= 2 and n.job_status(j) == "RUNNING":
+            limit = j["spec"].get("backoffLimit", 6)
+            burning.append((f / max(limit, 1), f"  {j['metadata']['name']}: {f}/{limit} attempts failed"))
+    for _, line in sorted(burning, reverse=True)[:20]:
+        print(line)
+    if burning:
+        print(f"  {len(burning)} Job(s) losing retries: find the node(s) -- `kubectl get events "
+              "--field-selector type=Warning` keeps the node of GC'd pods for ~1 h")
+    stuck = []
+    for p in pods:
+        dl = p["metadata"].get("deletionTimestamp")
+        ph = p.get("status", {}).get("phase")
+        if ph == "Unknown" or (dl and age_min(dl) > 15):
+            stuck.append(f"  {ph}{' Terminating' if dl else ''} {p['metadata']['name']} on "
+                         f"{p['spec'].get('nodeName')}")
+    for line in stuck[:20]:
+        print(line)
+    if stuck:
+        print(f"  {len(stuck)} stuck pod(s): if the node is gone / NotReady, `kubectl delete pod "
+              "--grace-period=0 --force` (check the run's outputs first if its Job looks unfinished)")
+    if not burning and not stuck:
+        print("  none")
+
+
 def exposed_jobs(pods, bad):
     """Live pods on a bad node, or whose Job template predates an exclusion (a
     Job's pod template is immutable: its retries can still land there)."""
@@ -260,7 +295,11 @@ def exposed_jobs(pods, bad):
         node = p["spec"].get("nodeName")
         missing = set(bad) - excluded_by(p)
         if node in bad:
-            on_bad.append(f"  {ph} ON EXCLUDED {node}: {p['metadata']['name']}")
+            # Faults on bad nodes hit at admission / GPU init; a pod already past that
+            # usually runs fine (seen 2026-09-30), and recycling it throws work away.
+            advice = ("not started yet: recycle the Job" if ph == "Pending" else
+                      "leave it if its log advances and its GPU is busy; recycle if IDLE / failing")
+            on_bad.append(f"  {ph} ON EXCLUDED {node}: {p['metadata']['name']}  ({advice})")
         elif missing:
             stale[frozenset(missing)] += 1
     for line in on_bad:
@@ -269,7 +308,8 @@ def exposed_jobs(pods, bad):
         print(f"  {k} live pod(s) whose Job does not exclude {len(missing)} bad node(s) "
               f"(e.g. {sorted(missing)[0]}): retries may land there; recycle them only if they fail")
     if on_bad:
-        print("  -> delete those Jobs (the scheduler relaunches a Job it saw vanish, with the current exclusions)")
+        print("  -> to recycle a Job, delete it: the scheduler relaunches a Job it saw vanish, "
+              "with the current exclusions")
     if not on_bad and not stale:
         print("  none")
 
@@ -360,6 +400,11 @@ def main():
         jobs = [j for j in kube.get_json("jobs") if j["metadata"]["name"].startswith(a.prefix)]
         pods = [p for p in kube.get_json("pods") if p["metadata"]["name"].startswith(a.prefix)]
     except n.KubectlError as e:
+        if e.kind == "login_down":
+            print("LOGIN SERVER DOWN: NRP's OIDC server is failing (5xx); credentials are fine and a "
+                  "fresh login would not help. Wait and re-check; running Jobs are unaffected, "
+                  "schedulers wait.")
+            return 5
         if e.kind == "auth":
             print("AUTH EXPIRED: kubectl needs a fresh login (run any kubectl command in a terminal). "
                   "Running Jobs are unaffected; schedulers wait.")
@@ -373,6 +418,7 @@ def main():
           f"(finished Jobs expire after the cluster TTL, ~24 h; trackers keep the record)")
     violations(kube.namespace, a.prefix, jobs)
     failures(kube, kube.namespace, a.prefix, pods, since, bad, not a.no_logs)
+    retry_burn(jobs, pods)
     exposed_jobs(pods, bad)
     pending(pods)
     idle(kube.namespace, a.prefix, a.idle_min)

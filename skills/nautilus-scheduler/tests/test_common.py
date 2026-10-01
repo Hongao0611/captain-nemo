@@ -44,6 +44,22 @@ def test_classify_error():
     assert c("error: http2: client connection lost") == "transient"
     assert c('The Job "x" is invalid: metadata.name: Invalid value') == "permanent"
     assert c("something never seen before") == "transient"
+    # login server down (2026-09-30): not an expired login
+    assert c("error: get-token: authentication error: oidc error: oidc discovery error: 503 Service "
+             "Unavailable: <html><body><h1>503 Service Unavailable</h1> No server is available to "
+             "handle this request.") == "login_down"
+    assert c("error: get-token: authentication error: oidc error: 500 Internal Server Error") == "login_down"
+    assert c("error: get-token: authentication error: oidc error: refresh token is expired") == "auth"
+
+
+def test_job_status():
+    js = lambda *conds: n.job_status({"status": {"conditions": [{"type": t, "status": "True"} for t in conds]}})
+    assert js() == "RUNNING"
+    assert js("Complete") == "SUCCEEDED" and js("Failed") == "FAILED"
+    # k8s >= 1.31: decided outcome while a pod is still stranded Terminating
+    assert js("SuccessCriteriaMet") == "SUCCEEDED"
+    assert js("FailureTarget") == "FAILED"
+    assert n.job_status({"status": {"conditions": [{"type": "Complete", "status": "False"}]}}) == "RUNNING"
 
 
 def test_exclude_nodes():

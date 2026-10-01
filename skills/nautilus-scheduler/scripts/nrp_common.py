@@ -85,6 +85,10 @@ class KubectlError(Exception):
         self.kind = kind
 
 
+# The login (OIDC) server itself down: credentials are fine, a fresh login would not
+# help -- wait. Seen 2026-09-30: "get-token: authentication error: oidc error: oidc
+# discovery error: 503 Service Unavailable ... No server is available" for ~1 h.
+_LOGIN_DOWN = ("oidc discovery error", "No server is available to handle this request")
 _AUTH = ("Unauthorized", "You must be logged in", "provide credentials", "oidc",
          "refresh token", "token has expired", "id-token")
 _TRANSIENT = ("http2: client connection lost", "connection reset", "i/o timeout",
@@ -98,11 +102,14 @@ _PERMANENT = ("is invalid", "Invalid value", "error validating", "unknown field"
 
 
 def classify_error(msg):
-    """Kubectl stderr -> gate | quota | auth | exists | transient | permanent."""
+    """Kubectl stderr -> gate | quota | login_down | auth | exists | transient | permanent."""
     if GATE_DENIED_MARKER in msg:
         return "gate"          # before 'permanent': the gate speaks via an admission webhook
     if "exceeded quota" in msg:
         return "quota"         # a Forbidden that clears when our own pods finish
+    if any(m in msg for m in _LOGIN_DOWN) or (
+            "get-token" in msg and re.search(r"\b50[0-4]\b", msg)):
+        return "login_down"    # before 'auth': these messages also mention oidc
     if any(m in msg for m in _AUTH):
         return "auth"
     if any(m in msg for m in _EXISTS):
@@ -166,12 +173,17 @@ class Kube:
 
 
 def job_status(job):
-    """Job json -> RUNNING | SUCCEEDED | FAILED."""
+    """Job json -> RUNNING | SUCCEEDED | FAILED.
+
+    Kubernetes >= 1.31 sets SuccessCriteriaMet / FailureTarget as soon as the outcome
+    is decided, and Complete / Failed only once every pod has terminated. A pod
+    stranded Terminating on a vanished node blocks the latter forever (seen
+    2026-09-30: a finished Job held its slot 23 h), so trust the earlier conditions."""
     for c in job.get("status", {}).get("conditions") or []:
         if c.get("status") == "True":
-            if c.get("type") == "Complete":
+            if c.get("type") in ("Complete", "SuccessCriteriaMet"):
                 return "SUCCEEDED"
-            if c.get("type") == "Failed":
+            if c.get("type") in ("Failed", "FailureTarget"):
                 return "FAILED"
     return "RUNNING"
 

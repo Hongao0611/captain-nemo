@@ -28,7 +28,10 @@ holds how NRP scores pods (calibrated), the failure signatures and the sizing ma
    Finished Jobs expire from the cluster after ~24 h. Never delete or reset it.
 3. **Touch only Jobs with your prefix** (shared namespace, shared PVC root).
 4. **A Job's pod template is immutable.** New node exclusions reach only Jobs
-   created later; recycle older Jobs that fail on or sit on a bad node.
+   created later. Recycle (delete -> the scheduler relaunches) older Jobs that fail
+   on a bad node or are still Pending (free: nothing ran). Leave a pod that already
+   runs healthily on a node excluded after it started -- faults hit at admission /
+   GPU init, and recycling it throws its progress away.
 5. Stop processes by PID from the `.pid` files, never `pkill -f`. Deleting Jobs
    that hold real work, PVC data or Hub repos needs the user's OK.
 
@@ -71,10 +74,15 @@ Act on what it prints:
 | output | action |
 |---|---|
 | `AUTH EXPIRED` (exit 4) | ask the user to log in (browser OIDC); nothing else can fix it |
+| `LOGIN SERVER DOWN` (exit 5) | NRP's OIDC server returns 5xx; credentials are fine -- wait and re-check hourly, do not ask the user to log in. Afterwards re-check retry budgets and checkpoints (reference.md section 6) |
 | wave `NOT RUNNING` with jobs left | relaunch it (step 2, same arguments) |
 | `EXCLUDE <node>` | append `<node>  # <date> <evidence>` to `~/.nrp/bad_nodes.txt` (live at the next launch) |
 | `recovered? <node>` / `watch <node>` | nothing yet; exclude if it repeats |
-| `ON EXCLUDED <node>` | delete that Job; the scheduler relaunches Jobs it sees vanish, with current exclusions |
+| several hosts of one group / site failing one after another | exclude the whole group (reference.md section 5) |
+| `Pending ON EXCLUDED` | delete that Job (it never started); the scheduler relaunches it with current exclusions |
+| `Running ON EXCLUDED` | leave it if its log advances and its GPU is busy; delete the Job if it is IDLE or failing |
+| `N/M attempts failed` (retry budget burned) | a black-hole node, even if no failed pod is left to see: find it in `kubectl get events --field-selector type=Warning` (kept ~1 h), exclude, recycle the Jobs still Pending |
+| stuck `Terminating` / `Unknown` pods | node gone or lost: confirm, then `kubectl delete pod --grace-period=0 --force` (they hold pod quota and can keep a finished Job open) |
 | `VIOLATING` on pods older than ~1 h | structural: fix the workload, or lower that wave's `<stem>.max` |
 | `IDLE` / `NO SAMPLES` | read the pod's log; delete the Job if it is hung or its node is gone |
 | many `Pending` for capacity | nothing (or widen the GPU types the manifest accepts) |
@@ -98,6 +106,11 @@ Act on what it prints:
 `run_wave.sh` stops when the scheduler exits 0 (all SUCCEEDED) or 3 (done, some
 FAILED / INVALID / UNKNOWN). For 3: read `.nrp/failed_logs/`, fix the cause,
 requeue. Then remove leftovers only after confirming with the user.
+
+Cleaning up while a wave runs: delete a finished Job only after the tracker has
+recorded it SUCCEEDED -- a Job that vanishes before the scheduler polled it is
+relaunched as "vanished". Completed pods do not count against the namespace pod
+quota; pods stuck Terminating / Unknown do.
 
 ## Scheduler behaviour worth knowing
 

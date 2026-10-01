@@ -1,7 +1,7 @@
 # Nautilus (NRP) scheduling reference
 
 Evidence behind the rules in SKILL.md. Learned running ~450 GPU training Jobs and
-~240 GPU eval Jobs in one lab namespace, 2026-09-23 .. 2026-09-30.
+~240 GPU eval Jobs in one lab namespace, 2026-09-23 .. 2026-10-01.
 
 ## 1. How NRP scores pods (the fair-use gate)
 
@@ -118,8 +118,9 @@ dozens of pods an hour ("black hole"). Signatures seen:
 
 | signature | meaning | action |
 |---|---|---|
-| pod reason `UnexpectedAdmissionError` | kubelet could not hand out the GPU | exclude if repeated and nothing runs there since |
-| `CUDA error: unspecified launch failure`, `CUDA unknown error`, `No CUDA GPUs are available`, `--tf32 requires Ampere` on an Ampere-labelled node | GPU unusable in the container | exclude |
+| pod reason `UnexpectedAdmissionError` (e.g. `Allocate failed due to device plugin GetPreferredAllocation rpc failed`) | kubelet could not hand out the GPU | exclude if repeated and nothing runs there since |
+| `CUDA error: unspecified launch failure`, `CUBLAS_STATUS_EXECUTION_FAILED`, `CUDA unknown error`, `No CUDA GPUs are available`, `--tf32 requires Ampere` on an Ampere-labelled node | GPU unusable in the container | exclude |
+| node's `nvidia.com/gpu.*` labels vanish after a burst of admission errors | GPU stack down on that node | exclude (pods stop landing there anyway, but its label may come back broken) |
 | `ContainerStatusUnknown`, pod stuck `Terminating`, no metrics for an hour, `kubectl logs` times out | node lost / unreachable | exclude if it does not come back; the Job retries elsewhere |
 | a setup step hangs (dataset `cp`, `hf auth login` to a PVC HF_HOME, apt mirror, `git clone` "unexpected disconnect while reading sideband packet") | CephFS / network trouble on that node | bound every such step with `timeout`, exclude on repeats |
 | a training step stalls > 1 h at 100% GPU | GPU/driver fault | exclude |
@@ -130,16 +131,39 @@ Rules:
   failures of any kind on one node in the window -- **unless pods started after
   the last failure have run healthily for 30+ min** (it recovered; a cluster-wide
   GPU-admission blip hit several nodes at once 2026-09-29 19:40-20:20).
-- Failed pods disappear with their Job (retries, cleanup), so kubectl alone
-  forgets the evidence within minutes; Prometheus keeps it
-  (`kube_pod_status_phase{phase="Failed"}`, `kube_pod_status_reason`,
-  `kube_pod_container_status_*terminated_reason`, `kube_pod_info` for the node).
+- **Persistent group fault vs site blip.** Hosts of one group (same name prefix /
+  site) failing *one after another over hours* is a group problem: ry-gpu-01..16
+  lost 6 hosts in ~45 h (15, 04, 01, 09, 10, 02; admission errors, stalled clones),
+  each exclusion cost 5-20 burned retries -> after the 3rd faulty host, exclude the
+  whole group. Many nodes of one site failing *at the same moment*, 1-3 pods each,
+  with `NodeNotReady` events, is a transient site blip (gpu-*.nrp.mghpcc.org,
+  2026-09-30 21:30: 11 admission errors over 6 nodes, all Ready minutes later):
+  exclude nothing, watch the worst node.
+- Evidence that survives pod garbage collection (admission-failed pods never
+  start a container and vanish within minutes, so the pod list shows nothing):
+  the Job's own `.status.failed` counter (`nrp_status.py` "retry budget burned"),
+  `kubectl get events --field-selector type=Warning` (the event's `source.host` is
+  the node; kept ~1 h), and Prometheus (`kube_pod_status_phase{phase="Failed"}`,
+  `kube_pod_status_reason`, `kube_pod_container_status_*terminated_reason`,
+  `kube_pod_info` for the node). A Job at N-1 of N failed attempts on a black hole
+  is one bad placement from exhausting.
 - A Job's pod template is immutable: an exclusion only reaches Jobs created
   afterwards. Jobs already created can still land on the node; recycle (delete ->
-  relaunch) those that fail there or sit there.
+  relaunch) those that fail there and those still Pending (nothing lost).
+- Faults hit at admission / GPU init: a pod that is already training on a node
+  excluded later usually finishes fine (ry-gpu-02 / -03 / -16 pods ran for hours
+  after the group exclusion). Leave it; recycle only if it goes IDLE or fails.
 - `nrp_scheduler.py` injects the bad-nodes file at every create, so a new
   exclusion needs no manifest regeneration and no restart.
-- Nodes get repaired: retry old entries after a few weeks.
+- Nodes get repaired: retry old entries after a few weeks, or when capacity is
+  short. Probe before re-including: a tiny Job pinned to the node
+  (`nodeSelector: kubernetes.io/hostname: <node>`, `backoffLimit: 0`,
+  `activeDeadlineSeconds`) that does the failing step for real under a timeout --
+  e.g. read the actual dataset from the PVC (14 hcc-nrp-shor hosts excluded for a
+  CephFS hang read 5.3 GB in ~225 s and were re-included, +111 GPUs). A storage
+  probe says nothing about the GPU: one re-included host then failed 5 of 5 GPU
+  pods (CUBLAS errors). Request a GPU in the probe and run a matmul when the GPU
+  matters, and keep re-included nodes on watch.
 
 ## 6. Operations
 
@@ -151,10 +175,33 @@ Rules:
   wave's names needs its own tracker (the tracker is keyed by name).
 - The API server drops connections under load (`http2: client connection lost`):
   retry creates; do not park the job.
-- kubectl uses OIDC via a browser. When it expires, only a human can log in
-  (WSL: forward localhost:8000; open the URL by hand if the configured browser
-  path is wrong). The login server itself sometimes returns 500 for hours --
-  wait. Running Jobs are unaffected; schedulers wait.
+- kubectl uses OIDC via a browser. Two different failures:
+  - **login expired** (`Unauthorized`, `refresh token`): only a human can log in
+    (WSL: forward localhost:8000; open the URL by hand if the configured browser
+    path is wrong).
+  - **login server down** (`get-token: ... oidc discovery error: 503 Service
+    Unavailable ... No server is available`, or 500s; ~1 h on 2026-09-30): the
+    credentials are fine and a new login would not help -- wait.
+  `classify_error` tells them apart (`auth` vs `login_down`). Either way running
+  Jobs are unaffected and schedulers wait.
+- **Aftermath of a control-plane / login outage.** While it lasted, kubelets lost
+  track of containers: 41 pods went `ContainerStatusUnknown` (each one a burned
+  retry -- 25 Jobs ended with 2-6 failed attempts) and the CephFS CSI driver logged
+  `FailedMount` (`an operation with the given Volume ID ... already exists`,
+  `DeadlineExceeded`) on 8 nodes. When it is back: list Jobs close to their
+  backoffLimit, and verify the checkpoints of runs that were writing one then
+  (one optimizer state was corrupted).
+- **A finished Job can stay "running" forever.** Kubernetes >= 1.31 sets
+  `SuccessCriteriaMet` when the outcome is decided and `Complete` only after every
+  pod has terminated; a pod stranded `Terminating` on a node that vanished blocked
+  `Complete` and held a scheduler slot for 23 h. `nrp_common.job_status` accepts
+  `SuccessCriteriaMet` / `FailureTarget`. Force-delete such pods
+  (`--grace-period=0 --force`) once the node is confirmed gone and the run's
+  outputs are confirmed complete.
+- The namespace pod quota counts pods that have not terminated -- including ones
+  stuck `Terminating` / `Unknown` -- not `Completed` ones. Delete finished Jobs only
+  after the tracker recorded them SUCCEEDED (one that vanishes before the
+  scheduler polled it is relaunched as "vanished").
 - Hugging Face: many pods downloading at once exhaust the account quota (HTTP
   429, `1000 api req / 5 min`); stagger downloads, pre-cache datasets on the PVC,
   run offline (`HF_DATASETS_OFFLINE=1`).
@@ -166,9 +213,23 @@ Rules:
 - `kubectl logs --timestamps` prints the local timezone.
 - Retries land on other nodes, so Jobs must be resumable and idempotent: resume
   only from a checkpoint with the complete state (weights, optimizer, scheduler,
-  RNG), verify it (a node lost mid-save left zero-filled files of the right
-  size), and delete old resume state only after the new checkpoint is verified.
-  Upload only what later stages need.
+  RNG), verify it, and delete old resume state only after the new checkpoint is
+  verified. Upload only what later stages need. Corruptions seen, each passing the
+  check before it: missing weight files; zero-filled files of the right size (node
+  lost mid-save: JSON and safetensors headers must parse); and a `torch.save` zip
+  with one corrupted member -- `zipfile.is_zipfile` only reads the end record, so
+  `torch.load` crash-looped through all 6 retries. Verify with
+  `zipfile.ZipFile(p).testzip()` (CRC of every member; ~9 s per GB on CephFS).
+  Keeping the previous full state until the new one verified let that run resume
+  from the step-8192 checkpoint instead of starting over.
+- Bound every setup step in **every** template, not just the main one: an
+  evaluation template without timeouts sat 73 min in `apt-get update` on a node
+  whose mirror access hung, while the training template (already bounded) failed
+  fast and retried elsewhere.
+- Long Pending: before blaming capacity, count the nodes your affinity admits
+  (GPU compute-capability / CUDA-runtime labels, ephemeral storage, exclusions vs
+  taints). 2026-09-30: 75 fitting nodes, all full -> real capacity; widening the
+  pool (re-probing old exclusions) helped, changing the spec would not have.
 
 ## 7. Prometheus
 

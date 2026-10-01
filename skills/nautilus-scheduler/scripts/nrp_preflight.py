@@ -310,7 +310,9 @@ def server_dry_run(docs, prefix, ns, context):
         print("  OK: the API server accepts the Job and the admission gate is open")
     except n.KubectlError as e:
         what = {"gate": "gate CLOSED (too many violating pods) -- manifest itself may be fine",
-                "auth": "kubectl login expired"}.get(e.kind, f"rejected ({e.kind})")
+                "auth": "kubectl login expired",
+                "login_down": "NRP login server down (no new login needed; retry later)"}.get(
+                    e.kind, f"rejected ({e.kind})")
         print(f"  {what}: {str(e)[:300]}")
 
 

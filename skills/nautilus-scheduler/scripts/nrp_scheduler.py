@@ -237,7 +237,12 @@ class Wave:
                 f.write(self.kube.logs(f"job/{name}", tail=400))
 
     def report_kube_error(self, what, e):
-        if e.kind == "auth":
+        if e.kind == "login_down":
+            if not self.auth_warned:
+                n.log(f"[LOGIN DOWN] the NRP login server is failing during {what}: no fresh "
+                      "login needed -- waiting for it to recover; running Jobs are unaffected.")
+                self.auth_warned = True
+        elif e.kind == "auth":
             if not self.auth_warned:
                 n.log(f"[AUTH] kubectl credentials expired during {what}: a human must log in "
                       "(run any kubectl command in a terminal). Waiting; running Jobs are unaffected.")
@@ -309,7 +314,7 @@ class Wave:
                            else f"namespace quota exceeded: {msg[:160]}")
                     n.log(f"[{e.kind}] {why}; retrying in {self.a.gate_retry}s")
                     return False
-                if e.kind == "auth":
+                if e.kind in ("auth", "login_down"):
                     self.report_kube_error(f"create {name}", e)
                     return False
                 if e.kind == "exists":

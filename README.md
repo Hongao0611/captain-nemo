@@ -67,7 +67,7 @@ touch Jobs without it.
 
 ## Status
 
-Version 0.1.0.
+Version 0.2.0.
 
 - The offline tests pass: 13 scheduler scenarios against a simulated cluster,
   plus unit tests (`python3 skills/nautilus-scheduler/tests/test_scheduler.py`,
