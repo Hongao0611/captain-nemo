@@ -74,6 +74,21 @@ but never closes the gate on your other waves.
 `--pace greedy` fills every free slot at once and relies on the gate-retry loop.
 Use it when nothing else of yours is running and a closed gate costs nothing.
 
+**Observed 2026-10-01: the gate does not count young pods.** With 6 pods
+violating by the portal rules -- all 1-11 min old, still in setup -- a
+server-side dry-run create (`nrp_status.py --gate-probe`) was admitted, and it
+stayed admitted at every hourly probe for 5 h while budget pacing (which
+presumes new pods to be violators) held launches and let a 50-slot training wave
+drain to 29. Under greedy pacing on 2026-09-29/30, bursts of 8-12 relaunched
+Jobs never drew a refusal in 2+ days; the gate closed only on long-lived
+violators (8 uncached eval pods at 29-38% lifetime GPU; 24-Gi memory requests
+at 8-10%). Likely the gate scores pods by the lagged usage stats, which do not
+judge a pod in its first ~15-60 min. Practical rule: if `--gate-probe` keeps
+saying OPEN while `budget allows 0`, budget pacing is costing throughput --
+switch to greedy and watch the logs for refusals (they cost nothing and are
+retried after `--gate-retry`); fix structural violators instead of pacing
+around them.
+
 Several schedulers on one machine share one budget: they count the same pods,
 and a host-wide lock (`~/.nrp/launch.lock`) serializes count-then-launch.
 
