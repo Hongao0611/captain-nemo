@@ -9,7 +9,8 @@ budget, failures since --since grouped by node and cause (with exclusion
 suggestions), Jobs still able to land on bad nodes, Pending reasons, idle /
 possibly hung pods, and optionally the admission gate.
 
-Exit codes: 0 ok, 4 kubectl credentials expired (a human must log in).
+Exit codes: 0 ok, 1 kubectl failed, 4 kubectl credentials expired (a human must
+log in), 5 NRP login server down (wait; a new login would not help).
 """
 import argparse
 import collections
