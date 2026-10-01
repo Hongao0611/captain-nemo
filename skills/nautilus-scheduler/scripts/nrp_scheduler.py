@@ -9,7 +9,9 @@
 - Excludes the nodes in the bad-nodes file at apply time (re-read every launch).
 - Tracker <state>/<stem>.tracker.json is the completion record: finished Jobs
   expire from the cluster after 24 h. Never delete it mid-wave.
-- Reloads the manifest when the file changes; <state>/<stem>.pause stops launches.
+- Reloads the manifest when the file changes; <state>/<stem>.pause stops launches;
+  <state>/<stem>.hold (one regex per line) keeps matching PENDING jobs from
+  launching -- the wave waits for them; remove the file to release them.
 - Exit 0 = all SUCCEEDED; 3 = finished with FAILED/INVALID/UNKNOWN jobs;
   2 = usage error. Run it under run_wave.sh, which respawns on anything else.
 """
@@ -78,7 +80,8 @@ class Wave:
         self.tracker_path = base + (".dryrun.json" if a.dry_run else ".tracker.json")
         self.real_tracker = base + ".tracker.json"
         self.max_path, self.pause_path = base + ".max", base + ".pause"
-        self.requeue_path = base + ".requeue"
+        self.requeue_path, self.hold_path = base + ".requeue", base + ".hold"
+        self.n_held = 0
         self.logs_dir = os.path.join(a.state_dir, "failed_logs")
         self.jobs, self.order, self.manifest_mtime = {}, [], None
         self.state = self.load_tracker()
@@ -115,9 +118,9 @@ class Wave:
     # -------------------------------------------------------------- tracker
     def load_tracker(self):
         # A dry run starts from the real tracker (read-only) so it decides as the
-        # live scheduler would, but writes only its own throwaway copy.
-        path = self.tracker_path if os.path.exists(self.tracker_path) or not self.a.dry_run \
-            else self.real_tracker
+        # live scheduler would, but writes only its own throwaway copy -- never
+        # from an earlier dry run's copy, which is stale.
+        path = self.real_tracker
         if not os.path.exists(path):
             return {}
         raw = json.load(open(path))
@@ -278,6 +281,18 @@ class Wave:
         n.exclude_nodes(job, n.load_bad_nodes(self.a.bad_nodes))
         return yaml.safe_dump(job, sort_keys=False)
 
+    def held(self, names):
+        """Names matching a regex in <stem>.hold (an unreadable pattern holds them all)."""
+        if not os.path.exists(self.hold_path):
+            return set()
+        pats = [l.strip() for l in open(self.hold_path) if l.strip() and not l.startswith("#")]
+        try:
+            rx = [re.compile(p) for p in pats]
+        except re.error as e:
+            n.log(f"[hold] bad pattern in {self.hold_path} ({e}); holding every pending job")
+            return set(names)
+        return {x for x in names if any(r.search(x) for r in rx)}
+
     def launch(self, cluster):
         if os.path.exists(self.pause_path):
             n.log(f"[pause] {self.pause_path} exists; no launches")
@@ -286,6 +301,12 @@ class Wave:
             return
         running = sum(self.state[x]["status"] == "RUNNING" for x in self.order)
         pending = [x for x in self.order if self.state[x]["status"] == "PENDING"]
+        held = self.held(pending)
+        if len(held) != self.n_held:
+            n.log(f"[hold] {len(held)} pending job(s) held by {self.hold_path}" if held
+                  else "[hold] nothing held; all pending jobs may launch")
+            self.n_held = len(held)
+        pending = [x for x in pending if x not in held]
         free = self.capacity() - running
         if free <= 0 or not pending:
             return
@@ -345,7 +366,7 @@ class Wave:
             if cluster is not None:
                 self.launch(cluster)
             c = self.summary()
-            n.log(f"[status] {c}")
+            n.log(f"[status] {c}" + (f" held={self.n_held}" if self.n_held else ""))
             if all(self.state[x]["status"] in TERMINAL for x in self.order):
                 break
             if self.a.once:

@@ -269,6 +269,28 @@ def t_pause_and_live_max():
     e.close()
 
 
+def t_hold_file():
+    # Held jobs wait (the wave does not finish without them) while the rest run;
+    # removing the file releases them.
+    jobs = [("t-a", {"fake/duration": 1}), ("t-x-held", {"fake/duration": 1}), ("t-b", {"fake/duration": 1})]
+    e = Env(jobs)
+    os.makedirs(e.statedir, exist_ok=True)
+    hold = os.path.join(e.statedir, "wave.hold")
+    open(hold, "w").write("# control arm waits\n-x-\n")
+    p = e.popen("--pace", "greedy", "--max-concurrent", "3")
+    time.sleep(5)
+    names = [x["name"] for x in e.cluster().get("creates", [])]
+    assert sorted(names) == ["t-a", "t-b"], names
+    assert p.poll() is None, "wave finished while a job was held"
+    assert e.tracker()["t-x-held"]["status"] == "PENDING", e.tracker()
+    os.remove(hold)
+    out = p.communicate(timeout=60)[0]
+    assert p.returncode == 0, out
+    assert [x["name"] for x in e.cluster()["creates"]][-1] == "t-x-held", out
+    assert "[hold] 1 pending job(s) held" in out and "held=1" in out and "[hold] nothing held" in out, out
+    e.close()
+
+
 def t_prefix_and_duplicate_refused():
     e = Env([("other-job", {})])
     rc, out = e.run()
@@ -284,6 +306,8 @@ def t_adopts_existing_and_dry_run():
     e = Env([("t-a", {"fake/duration": 3}), ("t-b", {"fake/duration": 3})])
     m = next(yaml.safe_load_all(open(e.manifest)))
     e.patch(jobs={"t-a": {"manifest": m, "created": time.time()}})   # already in the cluster
+    os.makedirs(e.statedir, exist_ok=True)       # a stale copy from an earlier dry run is ignored
+    json.dump({"t-b": {"status": "SUCCEEDED", "attempts": 1}}, open(os.path.join(e.statedir, "wave.dryrun.json"), "w"))
     rc, out = e.run("--pace", "greedy", "--dry-run", "--once")
     assert rc == 1, out
     assert "[adopt] t-a" in out and "[would launch] t-b" in out, out

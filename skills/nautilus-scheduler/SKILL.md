@@ -95,6 +95,7 @@ Act on what it prints:
 |---|---|
 | change concurrency | `echo 30 > .nrp/<stem>.max` |
 | stop launching (running Jobs continue) | `touch .nrp/<stem>.pause` (remove to resume) |
+| hold some jobs back (e.g. a control arm until another wave is done) | regexes, one per line, in `.nrp/<stem>.hold`; matching PENDING jobs are not launched and the wave waits for them (log: `held=N`); remove the file to release them |
 | rerun jobs / retry FAILED, INVALID, UNKNOWN | job names, one per line, in `.nrp/<stem>.requeue` |
 | add or change jobs | regenerate the manifest file; it is reloaded when it changes |
 | exclude a node | edit `~/.nrp/bad_nodes.txt` |

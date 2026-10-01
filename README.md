@@ -113,6 +113,7 @@ name without `.yaml`):
 |---|---|
 | change concurrency | `echo 30 > .nrp/<stem>.max` |
 | pause / resume launching (running Jobs continue) | `touch .nrp/<stem>.pause` / `rm .nrp/<stem>.pause` |
+| hold back some jobs until you release them | job-name regexes, one per line, in `.nrp/<stem>.hold`; `rm` it to release |
 | rerun or retry jobs | write their names, one per line, to `.nrp/<stem>.requeue` |
 | keep Jobs off a node | add `<hostname>  # <date> <reason>` to `~/.nrp/bad_nodes.txt` |
 | add or change jobs | regenerate `jobs.yaml`; it is reloaded when it changes |
