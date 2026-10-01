@@ -156,7 +156,11 @@ def failed_history(ns, prefix, since):
     sel = f'namespace="{ns}",pod=~"{n.prom_prefix_re(prefix)}"'
     t0 = dt.datetime.fromisoformat(since.replace("Z", "+00:00"))
     w = f"{max(60, int((n.utcnow() - t0).total_seconds()))}s"
-    failed = {m["pod"] for m, v in n.prom(f'max_over_time(kube_pod_status_phase{{{sel},phase="Failed"}}[{w}]) == 1')}
+    # Failed at some point in the window but NOT already Failed at its start: a failed
+    # pod lingers in phase Failed for hours, and counting it at every later check made
+    # outage casualties look like fresh node faults (2026-10-01).
+    ph = f'kube_pod_status_phase{{{sel},phase="Failed"}}'
+    failed = {m["pod"] for m, v in n.prom(f"(max_over_time({ph}[{w}]) == 1) unless ({ph} offset {w} == 1)")}
     node = {}
     for m, v in n.prom(f"max_over_time(kube_pod_info{{{sel}}}[{w}])"):
         if m.get("node"):
@@ -171,6 +175,21 @@ def failed_history(ns, prefix, since):
     return {p: (node.get(p), reason.get(p, ""), created.get(p)) for p in failed}
 
 
+def failed_at(pod):
+    """Epoch seconds when a Failed pod failed: its container's finishedAt, else the
+    PodFailed transition of its Ready condition (pods whose container was lost --
+    ContainerStatusUnknown -- have no finishedAt), else None."""
+    st = pod.get("status", {})
+    for cs in st.get("containerStatuses") or []:
+        fin = (cs.get("state", {}).get("terminated") or {}).get("finishedAt")
+        if fin:
+            return dt.datetime.fromisoformat(fin.replace("Z", "+00:00")).timestamp()
+    for c in st.get("conditions") or []:
+        if c.get("type") == "Ready" and c.get("reason") == "PodFailed" and c.get("lastTransitionTime"):
+            return dt.datetime.fromisoformat(c["lastTransitionTime"].replace("Z", "+00:00")).timestamp()
+    return None
+
+
 def failures(kube, ns, prefix, pods, since, bad, want_logs):
     section(f"failures since {since}")
     live = {p["metadata"]["name"]: p for p in pods}
@@ -179,9 +198,11 @@ def failures(kube, ns, prefix, pods, since, bad, want_logs):
     except Exception as e:
         print(f"  Prometheus unavailable ({str(e)[:120]}); using live pods only")
         hist = {}
+    t_since = dt.datetime.fromisoformat(since.replace("Z", "+00:00")).timestamp()
     for name, p in live.items():            # failed pods Prometheus has not scraped yet
-        if p.get("status", {}).get("phase") == "Failed" and name not in hist:
-            hist[name] = (p["spec"].get("nodeName"), p["status"].get("reason") or "", time.time())
+        when = failed_at(p)
+        if p.get("status", {}).get("phase") == "Failed" and name not in hist and when and when >= t_since:
+            hist[name] = (p["spec"].get("nodeName"), p["status"].get("reason") or "", when)
     if not hist:
         print("  none")
         return

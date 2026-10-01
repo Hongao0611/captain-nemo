@@ -129,6 +129,6 @@ yours to clean, with the user's OK.
 ## Tests
 
 `python3 $SKILL_DIR/tests/test_scheduler.py` (13 scenarios against a simulated
-cluster, ~2 min), `python3 $SKILL_DIR/tests/test_common.py` and
-`python3 $SKILL_DIR/tests/test_cleanup.py`. Run them after
+cluster, ~2 min), `python3 $SKILL_DIR/tests/test_common.py`, `python3 $SKILL_DIR/tests/test_cleanup.py`
+and `python3 $SKILL_DIR/tests/test_status.py`. Run them after
 changing the scripts; none touches the real cluster.
