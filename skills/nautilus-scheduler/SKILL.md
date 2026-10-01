@@ -87,7 +87,7 @@ Act on what it prints:
 | `VIOLATING` on pods older than ~1 h | structural: fix the workload, or lower that wave's `<stem>.max` |
 | `IDLE` / `NO SAMPLES` | read the pod's log; delete the Job if it is hung or its node is gone |
 | many `Pending` for capacity | nothing (or widen the GPU types the manifest accepts) |
-| `budget allows 0` for hours with a long queue | if the violators are mature pods: fix them, do not raise the budget. If they are young pods (setup) and `--gate-probe` says OPEN, the gate is not counting them: relaunch the wave with `--pace greedy` (reference.md section 2) |
+| `budget allows 0` for hours with a long queue | if the violators are mature pods: fix them, do not raise the budget. If they are young pods (setup), the gate counts them after ~10-15 min, until they mature. Greedy refills faster but closes the gate for ~1 h after a big burst, which blocks your other waves too: prefer greedy only when a refill matters more than those launches (reference.md section 2) |
 
 ### 4. Adjust a running wave (no restart needed)
 
