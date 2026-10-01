@@ -2,6 +2,15 @@
   "name": "captain-nemo",
   "description": "Schedule, monitor and repair waves of Kubernetes Jobs on the Nautilus (NRP) cluster at the highest concurrency its fair-use gate allows.",
   "version": "0.2.0",
-  "author": { "name": "Hongao0611" },
-  "keywords": ["nautilus", "nrp", "kubernetes", "gpu", "scheduler"]
+  "author": {
+    "name": "Hongao0611"
+  },
+  "license": "MIT",
+  "keywords": [
+    "nautilus",
+    "nrp",
+    "kubernetes",
+    "gpu",
+    "scheduler"
+  ]
 }

@@ -192,4 +192,6 @@ Version 0.2.0.
 - NRP's scoring was matched to its Violations page on 2026-09-29. If NRP changes
   its policy, re-check the thresholds in `scripts/nrp_common.py`.
 
-Private for now; no license yet.
+## License
+
+MIT -- see [LICENSE](LICENSE). Use it, change it, share it; keep the copyright notice.
