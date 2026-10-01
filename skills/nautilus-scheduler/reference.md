@@ -222,6 +222,13 @@ Rules:
   `zipfile.ZipFile(p).testzip()` (CRC of every member; ~9 s per GB on CephFS).
   Keeping the previous full state until the new one verified let that run resume
   from the step-8192 checkpoint instead of starting over.
+- "Complete state" includes every RNG that decides what training does next, not
+  only the torch / numpy / python states the Trainer saves: a neuron-freezing
+  callback drew its layer choices from its own `random.Random(seed)`, re-created
+  on resume, so a run resumed mid-schedule would have frozen different layers than
+  the uninterrupted run (found 2026-10-01 by testing resume == uninterrupted on a
+  tiny model; no run had resumed in that window yet). Save such state with the
+  checkpoint and test resume equivalence on a toy model before a wave.
 - Bound every setup step in **every** template, not just the main one: an
   evaluation template without timeouts sat 73 min in `apt-get update` on a node
   whose mirror access hung, while the training template (already bounded) failed

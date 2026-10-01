@@ -11,7 +11,8 @@ Tools in `scripts/` (Python 3 + PyYAML, `kubectl` logged in to the cluster):
 |---|---|---|
 | `nrp_preflight.py` | lint a manifest; `--harden OUT` writes a copy with bad-node exclusion, `$NODE_NAME` and timeouts on slow setup steps; `--usage-from PREFIX` recommends requests from measured usage; `--server-dry-run` validates + probes the gate | read-only |
 | `run_wave.sh` + `nrp_scheduler.py` | keep a wave running at max concurrency within NRP's violation budget, exclude bad nodes, retry failures, track completion | creates / deletes **your** Jobs |
-| `nrp_status.py` | the periodic check: waves, violations + launch budget, failures by node with exclusion advice, exposed Jobs, Pending reasons, idle pods, gate | read-only |
+| `nrp_status.py` | the periodic check: waves, violations + launch budget, failures by node with exclusion advice, retry burn, warning events by node, exposed Jobs, Pending reasons, idle pods, gate | read-only |
+| `nrp_cleanup.py` | delete finished Jobs the tracker recorded SUCCEEDED; force-delete pods stuck on a gone / NotReady node (dry run unless `--apply`) | deletes **your** finished Jobs / stuck pods |
 
 `SKILL_DIR` below means the directory this SKILL.md is in (e.g. `~/.claude/skills/nautilus-scheduler` for a manual install, or the plugin install location).
 Read `reference.md` before changing concurrency, requests or exclusion rules: it
@@ -81,8 +82,8 @@ Act on what it prints:
 | several hosts of one group / site failing one after another | exclude the whole group (reference.md section 5) |
 | `Pending ON EXCLUDED` | delete that Job (it never started); the scheduler relaunches it with current exclusions |
 | `Running ON EXCLUDED` | leave it if its log advances and its GPU is busy; delete the Job if it is IDLE or failing |
-| `N/M attempts failed` (retry budget burned) | a black-hole node, even if no failed pod is left to see: find it in `kubectl get events --field-selector type=Warning` (kept ~1 h), exclude, recycle the Jobs still Pending |
-| stuck `Terminating` / `Unknown` pods | node gone or lost: confirm, then `kubectl delete pod --grace-period=0 --force` (they hold pod quota and can keep a finished Job open) |
+| `N/M attempts failed` (retry budget burned) | a black-hole node, even if no failed pod is left to see: the "pod warning events" section names it (events outlive GC'd pods by ~1 h); exclude, recycle the Jobs still Pending |
+| stuck `Terminating` / `Unknown` pods | node gone or lost: `nrp_cleanup.py --prefix me-` lists them, `--apply` force-deletes those on a gone / NotReady node (they hold pod quota and can keep a finished Job open; check the run's outputs first if its Job looks unfinished) |
 | `VIOLATING` on pods older than ~1 h | structural: fix the workload, or lower that wave's `<stem>.max` |
 | `IDLE` / `NO SAMPLES` | read the pod's log; delete the Job if it is hung or its node is gone |
 | many `Pending` for capacity | nothing (or widen the GPU types the manifest accepts) |
@@ -107,10 +108,12 @@ Act on what it prints:
 FAILED / INVALID / UNKNOWN). For 3: read `.nrp/failed_logs/`, fix the cause,
 requeue. Then remove leftovers only after confirming with the user.
 
-Cleaning up while a wave runs: delete a finished Job only after the tracker has
-recorded it SUCCEEDED -- a Job that vanishes before the scheduler polled it is
-relaunched as "vanished". Completed pods do not count against the namespace pod
-quota; pods stuck Terminating / Unknown do.
+Cleaning up while a wave runs: `nrp_cleanup.py --prefix me- [--apply]` deletes a
+finished Job only after the tracker has recorded it SUCCEEDED -- a Job that
+vanishes before the scheduler polled it is relaunched as "vanished". Completed
+pods do not count against the namespace pod quota; pods stuck Terminating /
+Unknown do. Project artifacts (PVC dirs, experiment trackers, model repos) are
+yours to clean, with the user's OK.
 
 ## Scheduler behaviour worth knowing
 
@@ -126,5 +129,6 @@ quota; pods stuck Terminating / Unknown do.
 ## Tests
 
 `python3 $SKILL_DIR/tests/test_scheduler.py` (13 scenarios against a simulated
-cluster, ~2 min) and `python3 $SKILL_DIR/tests/test_common.py`. Run both after
-changing the scripts; neither touches the real cluster.
+cluster, ~2 min), `python3 $SKILL_DIR/tests/test_common.py` and
+`python3 $SKILL_DIR/tests/test_cleanup.py`. Run them after
+changing the scripts; none touches the real cluster.

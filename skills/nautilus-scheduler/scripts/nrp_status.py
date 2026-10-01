@@ -266,8 +266,8 @@ def retry_burn(jobs, pods):
     for _, line in sorted(burning, reverse=True)[:20]:
         print(line)
     if burning:
-        print(f"  {len(burning)} Job(s) losing retries: find the node(s) -- `kubectl get events "
-              "--field-selector type=Warning` keeps the node of GC'd pods for ~1 h")
+        print(f"  {len(burning)} Job(s) losing retries: find the node(s) in the warning-events "
+              "section below (events keep the node of GC'd pods for ~1 h)")
     stuck = []
     for p in pods:
         dl = p["metadata"].get("deletionTimestamp")
@@ -281,6 +281,30 @@ def retry_burn(jobs, pods):
         print(f"  {len(stuck)} stuck pod(s): if the node is gone / NotReady, `kubectl delete pod "
               "--grace-period=0 --force` (check the run's outputs first if its Job looks unfinished)")
     if not burning and not stuck:
+        print("  none")
+
+
+def warning_events(kube, prefix):
+    """Warning events of your pods by reason / node. They outlive the pods: an
+    admission-failed pod is garbage-collected within minutes, its event stays ~1 h
+    and still names the node (source.host). This is how a black hole is found when
+    retry_burn shows Jobs losing attempts but no failed pod is left."""
+    section("pod warning events (kept ~1 h) by reason / node")
+    try:
+        events = kube.get_json("events")
+    except n.KubectlError as e:
+        print(f"  (events unavailable: {str(e)[:120]})")
+        return
+    c = collections.Counter()
+    for e in events:
+        o = e.get("involvedObject", {})
+        if (o.get("kind") == "Pod" and o.get("name", "").startswith(prefix) and e.get("type") == "Warning"
+                and e.get("reason") != "FailedScheduling"):   # Pending for capacity: see "pending"
+            node = (e.get("source") or {}).get("host") or e.get("reportingInstance") or "?"
+            c[(e.get("reason"), node)] += e.get("count") or 1
+    for (reason, node), k in c.most_common(10):
+        print(f"  {k:4d}  {reason:26s} {node}")
+    if not c:
         print("  none")
 
 
@@ -420,6 +444,7 @@ def main():
     violations(kube.namespace, a.prefix, jobs)
     failures(kube, kube.namespace, a.prefix, pods, since, bad, not a.no_logs)
     retry_burn(jobs, pods)
+    warning_events(kube, a.prefix)
     exposed_jobs(pods, bad)
     pending(pods)
     idle(kube.namespace, a.prefix, a.idle_min)
