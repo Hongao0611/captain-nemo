@@ -41,7 +41,7 @@ SIGNATURES = [
                             r"|Network is unreachable|Connection timed out"),
     ("setup-stall", True, r"stalled on node"),
     ("oom", False, r"OOMKilled|Killed process|out of memory"),
-    ("hub-quota", False, r"429|Too Many Requests|rate limit"),
+    ("hub-quota", False, r"429 Client Error|HTTP Error 429|Too Many Requests|[Rr]ate[- ]limit"),   # not bare "429": tqdm counters
     ("app-error", False, r"Traceback|Error|error|exit"),
 ]
 
@@ -140,7 +140,7 @@ def violations(ns, prefix, jobs):
 def classify(pod, log_tail):
     st = pod.get("status", {})
     reasons = [st.get("reason") or ""]
-    for cs in st.get("containerStatuses") or []:
+    for cs in n.container_statuses(pod):
         term = (cs.get("state") or {}).get("terminated") or (cs.get("lastState") or {}).get("terminated") or {}
         reasons += [term.get("reason") or "", str(term.get("exitCode", ""))]
     text = " ".join(reasons) + " " + (log_tail or "")
@@ -166,7 +166,9 @@ def failed_history(ns, prefix, since):
         if m.get("node"):
             node[m["pod"]] = m["node"]
     reason = {}
-    for metric in ("kube_pod_container_status_last_terminated_reason",
+    for metric in ("kube_pod_init_container_status_last_terminated_reason",
+                   "kube_pod_init_container_status_terminated_reason",
+                   "kube_pod_container_status_last_terminated_reason",
                    "kube_pod_container_status_terminated_reason", "kube_pod_status_reason"):
         for m, v in n.prom(f"max_over_time({metric}{{{sel}}}[{w}]) == 1"):
             if m.get("reason") not in (None, "", "Completed"):
@@ -176,14 +178,14 @@ def failed_history(ns, prefix, since):
 
 
 def failed_at(pod):
-    """Epoch seconds when a Failed pod failed: its container's finishedAt, else the
+    """Epoch seconds when a Failed pod failed: its last container's finishedAt, else the
     PodFailed transition of its Ready condition (pods whose container was lost --
     ContainerStatusUnknown -- have no finishedAt), else None."""
     st = pod.get("status", {})
-    for cs in st.get("containerStatuses") or []:
-        fin = (cs.get("state", {}).get("terminated") or {}).get("finishedAt")
-        if fin:
-            return dt.datetime.fromisoformat(fin.replace("Z", "+00:00")).timestamp()
+    fins = sorted(f for cs in n.container_statuses(pod)
+                  if (f := (cs.get("state", {}).get("terminated") or {}).get("finishedAt")))
+    if fins:   # the last container to finish (init containers run first)
+        return dt.datetime.fromisoformat(fins[-1].replace("Z", "+00:00")).timestamp()
     for c in st.get("conditions") or []:
         if c.get("type") == "Ready" and c.get("reason") == "PodFailed" and c.get("lastTransitionTime"):
             return dt.datetime.fromisoformat(c["lastTransitionTime"].replace("Z", "+00:00")).timestamp()
@@ -387,8 +389,9 @@ def pending(pods):
             continue
         msg = next((c.get("message", "") for c in p["status"].get("conditions") or []
                     if c.get("type") == "PodScheduled" and c.get("status") == "False"), "")
-        waiting = next(((cs.get("state") or {}).get("waiting", {}).get("reason", "")
-                        for cs in p["status"].get("containerStatuses") or []), "")
+        waiting = next((r for cs in n.container_statuses(p)
+                        if (r := (cs.get("state") or {}).get("waiting", {}).get("reason", ""))
+                        and r != "PodInitializing"), "")
         why = ("unschedulable: " + summarize_unschedulable(msg)) if msg else (waiting or "starting")
         rows.append((age_min(p["metadata"].get("creationTimestamp")) or 0, p["metadata"]["name"], why))
     if not rows:

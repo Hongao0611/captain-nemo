@@ -100,6 +100,15 @@ def test_bad_nodes_file(tmp="/tmp/nrp-test-badnodes.txt"):
     os.remove(tmp)
 
 
+
+def test_init_containers_get_node_name():
+    job = {"spec": {"template": {"spec": {"initContainers": [{"name": "train"}], "containers": [{"name": "eval"}]}}}}
+    n.add_node_name_env(job)
+    spec = job["spec"]["template"]["spec"]
+    assert [c["name"] for c in n.all_containers(spec)] == ["train", "eval"]
+    assert all(any(e["name"] == "NODE_NAME" for e in c["env"]) for c in n.all_containers(spec))
+
+
 if __name__ == "__main__":
     fails = 0
     for k, f in list(globals().items()):

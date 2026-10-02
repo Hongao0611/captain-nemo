@@ -136,7 +136,7 @@ def lint(docs, prefix, bad):
         if missing:
             f.add("INFO", f"{len(missing)} bad node(s) not excluded in the manifest (nrp_scheduler.py "
                           "injects them at apply time; --harden bakes them in)", name)
-        for c in pod.get("containers") or []:
+        for c in n.all_containers(pod):
             lint_container(f, name, c)
     return f
 
@@ -193,7 +193,7 @@ def harden(docs, bad):
         if d.get("kind") == "Job":
             n.exclude_nodes(d, bad)
             n.add_node_name_env(d)
-            for c in d["spec"]["template"]["spec"].get("containers") or []:
+            for c in n.all_containers(d["spec"]["template"]["spec"]):
                 script = script_of(c)
                 if script is None:
                     continue

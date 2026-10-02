@@ -165,7 +165,9 @@ class Kube:
         return self.run("delete", "job", name, "--wait=true", "--timeout=120s", timeout=180)
 
     def logs(self, target, tail=None, timeout=60):
-        args = ["logs", target] + ([f"--tail={tail}"] if tail else [])
+        # --all-containers: a pod's failure may be in an init container (e.g. a
+        # train-then-evaluate Job whose training runs as the init container).
+        args = ["logs", target, "--all-containers=true"] + ([f"--tail={tail}"] if tail else [])
         try:
             return self.run(*args, timeout=timeout)
         except KubectlError:
@@ -364,9 +366,20 @@ def exclude_nodes(job, nodes):
     return job
 
 
+def all_containers(pod_spec):
+    """Init containers then app containers of a pod spec."""
+    return (pod_spec.get("initContainers") or []) + (pod_spec.get("containers") or [])
+
+
+def container_statuses(pod):
+    """Init then app container statuses of a pod object."""
+    st = pod.get("status", {})
+    return (st.get("initContainerStatuses") or []) + (st.get("containerStatuses") or [])
+
+
 def add_node_name_env(job):
     """Expose the node name as $NODE_NAME so failure messages can name the node."""
-    for c in job["spec"]["template"]["spec"].get("containers", []):
+    for c in all_containers(job["spec"]["template"]["spec"]):
         env = c.setdefault("env", [])
         if not any(e.get("name") == "NODE_NAME" for e in env):
             env.append({"name": "NODE_NAME",
