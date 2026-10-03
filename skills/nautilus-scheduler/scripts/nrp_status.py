@@ -231,7 +231,7 @@ def failures(kube, ns, prefix, pods, since, bad, want_logs):
     for p in pods:
         st = p.get("status", {})
         age = age_min(st.get("startTime"))
-        if st.get("phase") == "Running" and age and age > 30 and p["spec"].get("nodeName"):
+        if n.is_working(p) and age and age > 30 and p["spec"].get("nodeName"):
             healthy_since[p["spec"]["nodeName"]].append(time.time() - age * 60)
     for node, rs in by_node.items():
         if node == "(unknown node)" or node in bad:
@@ -385,7 +385,7 @@ def pending(pods):
     section("pending pods")
     rows = []
     for p in pods:
-        if p.get("status", {}).get("phase") != "Pending":
+        if p.get("status", {}).get("phase") != "Pending" or n.is_working(p):
             continue
         msg = next((c.get("message", "") for c in p["status"].get("conditions") or []
                     if c.get("type") == "PodScheduled" and c.get("status") == "False"), "")
@@ -412,6 +412,7 @@ def idle(ns, prefix, idle_min):
         cpu = {m["pod"]: v for m, v in n.prom(
             f'sum by (pod) (rate(container_cpu_usage_seconds_total{{{sel},container!="",container!="POD"}}[{w}]))')}
         running = {m["pod"] for m, v in n.prom(f'kube_pod_status_phase{{{sel},phase="Running"}} == 1')}
+        running |= {m["pod"] for m, v in n.prom(f"kube_pod_init_container_status_running{{{sel}}} == 1")}
     except Exception as e:
         print(f"  Prometheus unavailable: {str(e)[:150]}")
         return

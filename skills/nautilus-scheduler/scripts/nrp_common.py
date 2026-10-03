@@ -239,6 +239,11 @@ def pod_usage(namespace, prefix, at=None):
     sel = f'namespace="{namespace}",pod=~"{prom_prefix_re(prefix)}"'
     csel = sel + ',container!="",container!="POD"'
     phase = {m["pod"]: m["phase"] for m, v in prom(f"kube_pod_status_phase{{{sel}}} == 1", at)}
+    # A pod running its init containers stays in phase Pending, but it is working
+    # (e.g. a train-then-evaluate Job whose training is the init container).
+    for m, v in prom(f"kube_pod_init_container_status_running{{{sel}}} == 1", at):
+        if phase.get(m["pod"]) == "Pending":
+            phase[m["pod"]] = "Running"
     node = {m["pod"]: m.get("node") for m, v in prom(f"kube_pod_info{{{sel}}}", at)}
     start = _by_pod(prom(f"kube_pod_start_time{{{sel}}}", at))
     created = _by_pod(prom(f"kube_pod_created{{{sel}}}", at))
@@ -375,6 +380,14 @@ def container_statuses(pod):
     """Init then app container statuses of a pod object."""
     st = pod.get("status", {})
     return (st.get("initContainerStatuses") or []) + (st.get("containerStatuses") or [])
+
+
+def is_working(pod):
+    """Running, or running its init containers (the pod phase stays Pending until they
+    finish), from a kubectl pod object."""
+    st = pod.get("status", {})
+    return st.get("phase") == "Running" or any(
+        "running" in (cs.get("state") or {}) for cs in st.get("initContainerStatuses") or [])
 
 
 def add_node_name_env(job):

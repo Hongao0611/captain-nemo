@@ -109,6 +109,15 @@ def test_init_containers_get_node_name():
     assert all(any(e["name"] == "NODE_NAME" for e in c["env"]) for c in n.all_containers(spec))
 
 
+
+def test_is_working():
+    init_running = {"status": {"phase": "Pending", "initContainerStatuses": [{"state": {"running": {}}}],
+                               "containerStatuses": [{"state": {"waiting": {"reason": "PodInitializing"}}}]}}
+    unscheduled = {"status": {"phase": "Pending"}}
+    assert n.is_working(init_running) and n.is_working({"status": {"phase": "Running"}})
+    assert not n.is_working(unscheduled)
+
+
 if __name__ == "__main__":
     fails = 0
     for k, f in list(globals().items()):
