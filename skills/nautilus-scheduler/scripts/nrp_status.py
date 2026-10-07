@@ -345,9 +345,12 @@ def exposed_jobs(pods, bad):
         if node in bad:
             # Faults on bad nodes hit at admission / GPU init; a pod already past that
             # usually runs fine (seen 2026-09-30), and recycling it throws work away.
-            advice = ("not started yet: recycle the Job" if ph == "Pending" else
+            # An init container at work keeps the phase Pending: that pod has started.
+            working = n.is_working(p)
+            state = "Running" if working else ph
+            advice = ("not started yet: recycle the Job" if not working else
                       "leave it if its log advances and its GPU is busy; recycle if IDLE / failing")
-            on_bad.append(f"  {ph} ON EXCLUDED {node}: {p['metadata']['name']}  ({advice})")
+            on_bad.append(f"  {state} ON EXCLUDED {node}: {p['metadata']['name']}  ({advice})")
         elif missing:
             stale[frozenset(missing)] += 1
     for line in on_bad:

@@ -37,6 +37,26 @@ def test_hub_quota_not_fooled_by_counters():
     assert s.classify(pod, "huggingface_hub.errors.HfHubHTTPError: 429 Client Error: Too Many Requests")[0] == "hub-quota"
 
 
+def test_exposed_init_running_is_started():
+    # A train-then-evaluate pod training in its init container stays in phase Pending:
+    # on an excluded node it must not be advised for recycling (2026-10-07: 6.4 h in).
+    import contextlib
+    import io
+
+    def pod(name, init_state):
+        return {"metadata": {"name": name}, "spec": {"nodeName": "bad-1"},
+                "status": {"phase": "Pending",
+                           "initContainerStatuses": [{"name": "training", "state": init_state}]}}
+    pods = [pod("me-training", {"running": {"startedAt": "2026-10-06T20:12:41Z"}}),
+            pod("me-unstarted", {"waiting": {"reason": "PodInitializing"}})]
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        s.exposed_jobs(pods, ["bad-1"])
+    lines = {ln.split(": ", 1)[1].split()[0]: ln for ln in out.getvalue().splitlines() if "ON EXCLUDED" in ln}
+    assert "Running ON EXCLUDED" in lines["me-training"] and "recycle the Job" not in lines["me-training"], lines
+    assert "Pending ON EXCLUDED" in lines["me-unstarted"] and "not started yet" in lines["me-unstarted"], lines
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_"):
