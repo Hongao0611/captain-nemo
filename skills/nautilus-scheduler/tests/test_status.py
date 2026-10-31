@@ -57,6 +57,25 @@ def test_exposed_init_running_is_started():
     assert "Pending ON EXCLUDED" in lines["me-unstarted"] and "not started yet" in lines["me-unstarted"], lines
 
 
+def test_violations_unknown_when_no_pod_series():
+    # 2026-10-31: kube-state-metrics series briefly absent -> 0 live pods while Jobs run must not read as a clean gate.
+    import contextlib, io
+    orig = s.n.count_violators
+    s.n.count_violators = lambda ns, prefix, jobs: (0, 0, {})
+    try:
+        jobs = [{"metadata": {"name": "me-a"}, "status": {"active": 1}}]
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            s.violations("ns", "me-", jobs)
+        assert "UNKNOWN" in out.getvalue() and "budget allows" not in out.getvalue(), out.getvalue()
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            s.violations("ns", "me-", [])
+        assert "UNKNOWN" not in out.getvalue() and "0 live pods" in out.getvalue(), out.getvalue()
+    finally:
+        s.n.count_violators = orig
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_"):

@@ -112,6 +112,12 @@ def violations(ns, prefix, jobs):
     except Exception as e:
         print(f"  Prometheus unavailable: {str(e)[:150]}")
         return
+    active = sum(1 for j in jobs or [] if j["metadata"]["name"].startswith(prefix) and n.job_status(j) == "RUNNING")
+    if not live and active:
+        # Seen 2026-10-31: kube-state-metrics series briefly absent -> "0 of 0 live pods" read as a clean gate.
+        print(f"  UNKNOWN: Prometheus returned no pod series while {active} of our Jobs are active (kube-state-metrics "
+              f"scrape gap?) -- the violation count is not known; rerun in a few minutes")
+        return
     now = time.time()
     capacity_wait, no_metrics = [], []
     for p, u in sorted(live.items()):
