@@ -28,12 +28,16 @@ import nrp_common as n  # noqa: E402
 
 
 def load_trackers(state_dirs):
-    """name -> status from every tracker (new {name: {status: ..}} or old flat {name: STATUS})."""
+    """name -> status from every tracker (new {name: {status: ..}} or old flat {name: STATUS}).
+    SUCCEEDED in any tracker wins: with one wave per namespace over a split manifest, the other wave's tracker lists
+    the same Job as PENDING (held), and glob order must not decide whether a finished Job is cleaned up."""
     out = {}
     for d in state_dirs:
         for path in glob.glob(os.path.join(d, "*.tracker.json")):
             for k, v in json.load(open(path)).items():
-                out[k] = v.get("status") if isinstance(v, dict) else v
+                s = v.get("status") if isinstance(v, dict) else v
+                if out.get(k) != "SUCCEEDED":
+                    out[k] = s
     return out
 
 

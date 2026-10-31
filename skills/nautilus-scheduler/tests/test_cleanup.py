@@ -43,6 +43,15 @@ def test_load_trackers_both_formats():
         assert c.load_trackers([d]) == {"me-a": "SUCCEEDED", "me-b": "SUCCEEDED"}
 
 
+def test_load_trackers_success_wins_across_waves():
+    # two waves over a split manifest: the other namespace's tracker holds the same Job as PENDING
+    for order in (("a", "b"), ("b", "a")):
+        with tempfile.TemporaryDirectory() as d:
+            json.dump({"me-x": {"status": "SUCCEEDED"}}, open(os.path.join(d, order[0] + ".tracker.json"), "w"))
+            json.dump({"me-x": {"status": "PENDING"}}, open(os.path.join(d, order[1] + ".tracker.json"), "w"))
+            assert c.load_trackers([d]) == {"me-x": "SUCCEEDED"}
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_"):
